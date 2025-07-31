@@ -3,7 +3,7 @@ package io.pillopl.library.lending.book.infrastructure;
 import io.pillopl.library.catalogue.BookId;
 import io.pillopl.library.catalogue.BookType;
 import io.pillopl.library.commons.aggregates.Version;
-import io.pillopl.library.lending.book.new_model.*;
+import io.pillopl.library.lending.book.model.*;
 import io.pillopl.library.lending.librarybranch.model.LibraryBranchId;
 import io.pillopl.library.lending.patron.model.PatronId;
 import lombok.Data;
@@ -35,31 +35,23 @@ class BookDatabaseEntity {
     int version;
 
     Book toDomainModel() {
-        Book book = new Book(new BookId(book_id), book_type, getInitialBranch(), new Version(version));
-        
-        switch (book_state) {
-            case OnHold:
-                book.placeOnHold(new PatronId(on_hold_by_patron), new LibraryBranchId(on_hold_at_branch), on_hold_till);
-                break;
-            case CheckedOut:
-                book.checkout(new PatronId(checked_out_by_patron), new LibraryBranchId(checked_out_at_branch));
-                break;
-            case Available:
-            default:
-                // Book is already in Available state by default
-                break;
-        }
-        
-        return book;
+        return Match(book_state).of(
+                Case($(Available), this::toAvailableBook),
+                Case($(OnHold), this::toBookOnHold),
+                Case($(CheckedOut), this::toCheckedOutBook)
+        );
     }
 
-    private LibraryBranchId getInitialBranch() {
-        if (available_at_branch != null) {
-            return new LibraryBranchId(available_at_branch);
-        } else if (on_hold_at_branch != null) {
-            return new LibraryBranchId(on_hold_at_branch);
-        } else {
-            return new LibraryBranchId(checked_out_at_branch);
-        }
+    private AvailableBook toAvailableBook() {
+        return new AvailableBook(new BookId(book_id), book_type,  new LibraryBranchId(available_at_branch), new Version(version));
+    }
+
+    private BookOnHold toBookOnHold() {
+        return new BookOnHold(new BookId(book_id), book_type, new LibraryBranchId(on_hold_at_branch), new PatronId(on_hold_by_patron), on_hold_till, new Version(version));
+    }
+
+    private CheckedOutBook toCheckedOutBook() {
+        return new CheckedOutBook(new BookId(book_id), book_type,  new LibraryBranchId(checked_out_at_branch), new PatronId(checked_out_by_patron), new Version(version));
     }
 }
+
