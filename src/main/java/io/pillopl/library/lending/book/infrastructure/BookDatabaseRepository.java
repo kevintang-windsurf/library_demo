@@ -3,7 +3,7 @@ package io.pillopl.library.lending.book.infrastructure;
 import io.pillopl.library.catalogue.BookId;
 import io.pillopl.library.catalogue.BookType;
 import io.pillopl.library.commons.aggregates.AggregateRootIsStale;
-import io.pillopl.library.lending.book.model.*;
+import io.pillopl.library.lending.book.new_model.*;
 import io.pillopl.library.lending.patron.application.hold.FindAvailableBook;
 import io.pillopl.library.lending.patron.application.hold.FindBookOnHold;
 import io.pillopl.library.lending.patron.model.PatronId;
@@ -43,73 +43,89 @@ class BookDatabaseRepository implements BookRepository, FindAvailableBook, FindB
 
     @Override
     public void save(Book book) {
-        findBy(book.bookId())
+        findBy(book.getBookId())
                 .map(entity -> updateOptimistically(book))
                 .onEmpty(() -> insertNew(book));
     }
 
     private int updateOptimistically(Book book) {
-        int result = Match(book).of(
-                Case($(instanceOf(AvailableBook.class)), this::update),
-                Case($(instanceOf(BookOnHold.class)), this::update),
-                Case($(instanceOf(CheckedOutBook.class)), this::update)
-        );
+        int result = updateBookState(book);
         if (result == 0) {
             throw new AggregateRootIsStale("Someone has updated book in the meantime, book: " + book);
         }
         return result;
     }
 
-    private int update(AvailableBook availableBook) {
+    private int updateBookState(Book book) {
+        String state = book.getCurrentState();
+        switch (state) {
+            case "AVAILABLE":
+                return updateAvailable(book);
+            case "ON_HOLD":
+                return updateOnHold(book);
+            case "CHECKED_OUT":
+                return updateCheckedOut(book);
+            default:
+                throw new IllegalStateException("Unknown book state: " + state);
+        }
+    }
+
+    private int updateAvailable(Book book) {
         return jdbcTemplate.update("UPDATE book_database_entity b SET b.book_state = ?, b.available_at_branch = ?, b.version = ? WHERE book_id = ? AND version = ?",
                 Available.toString(),
-                availableBook.getLibraryBranch().getLibraryBranchId(),
-                availableBook.getVersion().getVersion() + 1,
-                availableBook.getBookId().getBookId(),
-                availableBook.getVersion().getVersion());
+                book.getCurrentBranch().getLibraryBranchId(),
+                book.getVersion().getVersion() + 1,
+                book.getBookId().getBookId(),
+                book.getVersion().getVersion());
     }
 
-    private int update(BookOnHold bookOnHold) {
-        return jdbcTemplate.update("UPDATE book_database_entity b SET b.book_state = ?, b.on_hold_at_branch = ?, b.on_hold_by_patron = ?, b.on_hold_till = ?, b.version = ? WHERE book_id = ? AND version = ?",
+    private int updateOnHold(Book book) {
+        return jdbcTemplate.update("UPDATE book_database_entity b SET b.book_state = ?, b.on_hold_at_branch = ?, b.on_hold_by_patron = ?, b.version = ? WHERE book_id = ? AND version = ?",
                 OnHold.toString(),
-                bookOnHold.getHoldPlacedAt().getLibraryBranchId(),
-                bookOnHold.getByPatron().getPatronId(),
-                bookOnHold.getHoldTill(),
-                bookOnHold.getVersion().getVersion() + 1,
-                bookOnHold.getBookId().getBookId(),
-                bookOnHold.getVersion().getVersion());
+                book.getCurrentBranch().getLibraryBranchId(),
+                book.getCurrentPatron().getPatronId(),
+                book.getVersion().getVersion() + 1,
+                book.getBookId().getBookId(),
+                book.getVersion().getVersion());
     }
 
-    private int update(CheckedOutBook checkedoutBook) {
+    private int updateCheckedOut(Book book) {
         return jdbcTemplate.update("UPDATE book_database_entity b SET b.book_state = ?, b.checked_out_at_branch = ?, b.checked_out_by_patron = ?, b.version = ? WHERE book_id = ? AND version = ?",
                 CheckedOut.toString(),
-                checkedoutBook.getCheckedOutAt().getLibraryBranchId(),
-                checkedoutBook.getByPatron().getPatronId(),
-                checkedoutBook.getVersion().getVersion() + 1,
-                checkedoutBook.getBookId().getBookId(),
-                checkedoutBook.getVersion().getVersion());
+                book.getCurrentBranch().getLibraryBranchId(),
+                book.getCurrentPatron().getPatronId(),
+                book.getVersion().getVersion() + 1,
+                book.getBookId().getBookId(),
+                book.getVersion().getVersion());
     }
 
     private void insertNew(Book book) {
-        Match(book).of(
-                Case($(instanceOf(AvailableBook.class)), this::insert),
-                Case($(instanceOf(BookOnHold.class)), this::insert),
-                Case($(instanceOf(CheckedOutBook.class)), this::insert)
-        );
+        String state = book.getCurrentState();
+        switch (state) {
+            case "AVAILABLE":
+                insertAvailable(book);
+                break;
+            case "ON_HOLD":
+                insertOnHold(book);
+                break;
+            case "CHECKED_OUT":
+                insertCheckedOut(book);
+                break;
+            default:
+                throw new IllegalStateException("Unknown book state: " + state);
+        }
     }
 
-    private int insert(AvailableBook availableBook) {
-        return insert(availableBook.getBookId(), availableBook.type(), Available, availableBook.getLibraryBranch().getLibraryBranchId(), null, null, null, null, null);
+    private int insertAvailable(Book book) {
+        return insert(book.getBookId(), book.getBookType(), Available, book.getCurrentBranch().getLibraryBranchId(), null, null, null, null, null);
     }
 
-    private int insert(BookOnHold bookOnHold) {
-        return insert(bookOnHold.getBookId(), bookOnHold.type(), OnHold, null, bookOnHold.getHoldPlacedAt().getLibraryBranchId(), bookOnHold.getByPatron().getPatronId(), bookOnHold.getHoldTill(), null, null);
-
+    private int insertOnHold(Book book) {
+        return insert(book.getBookId(), book.getBookType(), OnHold, null, book.getCurrentBranch().getLibraryBranchId(), book.getCurrentPatron().getPatronId(), null, null, null);
     }
 
-    private int insert(CheckedOutBook checkedoutBook) {
-        return insert(checkedoutBook.getBookId(), checkedoutBook.type(), CheckedOut, null, null, null, null, checkedoutBook.getCheckedOutAt().getLibraryBranchId(), checkedoutBook.getByPatron().getPatronId());
-
+    private int insertCheckedOut(Book book) {
+        return insert(book.getBookId(), book.getBookType(), CheckedOut, null, null, null, null, book.getCurrentBranch().getLibraryBranchId(), book.getCurrentPatron().getPatronId());
     }
 
     private int insert(BookId bookId, BookType bookType, BookDatabaseEntity.BookState state, UUID availableAt, UUID onHoldAt, UUID onHoldBy, Instant onHoldTill, UUID checkedOutAt, UUID checkedOutBy) {
@@ -130,19 +146,18 @@ class BookDatabaseRepository implements BookRepository, FindAvailableBook, FindB
     }
 
     @Override
-    public Option<AvailableBook> findAvailableBookBy(BookId bookId) {
-        return Match(findBy(bookId)).of(
-                Case($Some($(instanceOf(AvailableBook.class))), Option::of),
-                Case($(), Option::none)
-        );
+    public Option<Book> findAvailableBook(BookId bookId) {
+        return findBookById(bookId)
+                .filter(entity -> entity.book_state.equals(Available))
+                .map(BookDatabaseEntity::toDomainModel);
     }
 
     @Override
-    public Option<BookOnHold> findBookOnHold(BookId bookId, PatronId patronId) {
-            return Match(findBy(bookId)).of(
-                Case($Some($(instanceOf(BookOnHold.class))), Option::of),
-                Case($(), Option::none)
-        );
+    public Option<Book> findBookOnHold(BookId bookId, PatronId patronId) {
+        return findBookById(bookId)
+                .filter(entity -> entity.book_state.equals(OnHold))
+                .filter(entity -> entity.on_hold_by_patron.equals(patronId.getPatronId()))
+                .map(BookDatabaseEntity::toDomainModel);
     }
 
 }
